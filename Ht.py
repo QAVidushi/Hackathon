@@ -77,8 +77,15 @@ date_col = None
 if date_cols:
     date_col = st.sidebar.selectbox("Select Date Column", date_cols, key="sidebar_date_col")
     if df_netsuite is not None and date_col:
-        min_date, max_date = df_netsuite[date_col].min(), df_netsuite[date_col].max()
-        date_range = st.sidebar.date_input("Date Range", [min_date, max_date], key="sidebar_date_range")
+        # Convert to datetime and handle errors
+        df_netsuite[date_col] = pd.to_datetime(df_netsuite[date_col], errors="coerce")
+        # Remove any NaT values before finding min/max
+        valid_dates = df_netsuite[date_col].dropna()
+        if len(valid_dates) > 0:
+            min_date, max_date = valid_dates.min(), valid_dates.max()
+            date_range = st.sidebar.date_input("Date Range", [min_date, max_date], key="sidebar_date_range")
+        else:
+            st.sidebar.warning(f"No valid dates found in {date_col}")
 
 account_filter = None
 account_col = None
@@ -87,12 +94,65 @@ if account_cols:
     if df_netsuite is not None and account_col:
         account_filter = st.sidebar.multiselect("Filter by Account", df_netsuite[account_col].dropna().unique(), key="sidebar_account_filter")
 
-account_filter = None
-account_col = None
-if netsuite_file and salesforce_file:
+# Compare Button
+st.sidebar.markdown("---")
+compare_button = st.sidebar.button("🔍 Compare Data", type="primary", use_container_width=True)
+
+if netsuite_file and salesforce_file and compare_button:
     if df_netsuite is None:
         df_netsuite = pd.read_excel(netsuite_file, engine="openpyxl")
     df_salesforce = pd.read_excel(salesforce_file, engine="openpyxl")
+
+    # Column Mapping Feature
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Column Mapping")
+    
+    # Choose mapping method
+    mapping_method = st.sidebar.radio(
+        "Mapping Method",
+        ["By Position (Sequential)", "By Name (Manual)"],
+        help="Choose how to map Salesforce columns to NetSuite columns"
+    )
+    
+    ns_columns = list(df_netsuite.columns)
+    sf_columns = list(df_salesforce.columns)
+    
+    if mapping_method == "By Position (Sequential)":
+        # Automatically map columns by position
+        st.sidebar.info("✓ Columns mapped by position (column 1 → column 1, etc.)")
+        # Rename Salesforce columns to match NetSuite column names by position
+        df_salesforce_renamed = df_salesforce.copy()
+        min_cols = min(len(ns_columns), len(sf_columns))
+        rename_dict = {sf_columns[i]: ns_columns[i] for i in range(min_cols)}
+        df_salesforce_renamed = df_salesforce_renamed.rename(columns=rename_dict)
+        df_salesforce = df_salesforce_renamed
+        st.sidebar.success(f"✓ {min_cols} columns mapped by position")
+    else:
+        # Manual column mapping
+        st.sidebar.info("Map Salesforce columns to NetSuite columns manually")
+        column_mapping = {}
+        
+        with st.sidebar.expander("Configure Column Mappings", expanded=False):
+            st.write("**Map Salesforce → NetSuite**")
+            for sf_col in sf_columns:
+                # Try to find a matching column name automatically
+                default_match = sf_col if sf_col in ns_columns else (ns_columns[0] if ns_columns else None)
+                mapped_col = st.selectbox(
+                    f"SFDC: {sf_col}",
+                    options=["(Skip)"] + ns_columns,
+                    index=ns_columns.index(default_match) + 1 if default_match and default_match in ns_columns else 0,
+                    key=f"map_{sf_col}"
+                )
+                if mapped_col != "(Skip)":
+                    column_mapping[mapped_col] = sf_col
+        
+        # Rename Salesforce columns to match NetSuite columns based on mapping
+        if column_mapping:
+            df_salesforce_renamed = df_salesforce.copy()
+            reverse_mapping = {v: k for k, v in column_mapping.items()}
+            df_salesforce_renamed = df_salesforce_renamed.rename(columns=reverse_mapping)
+            df_salesforce = df_salesforce_renamed
+            st.sidebar.success(f"✓ {len(column_mapping)} columns mapped manually")
 
     # Define tabs after files are uploaded
     tab1, tab2, tab3, tab4 = st.tabs(["🌍 Overview", "🔍 Drill Down", "📈 Trend", "✅ Advanced Check"])
@@ -313,7 +373,15 @@ if netsuite_file and salesforce_file:
             if field in filtered_ns.columns:
                 total = len(filtered_ns[field])
                 if field in filtered_sf.columns:
-                    matches = (filtered_ns[field] == filtered_sf[field]).sum()
+                    # Reset indices to ensure alignment for comparison
+                    ns_vals = filtered_ns[field].reset_index(drop=True).astype(str)
+                    sf_vals = filtered_sf[field].reset_index(drop=True).astype(str)
+                    # Use the minimum length to avoid index mismatch
+                    min_len = min(len(ns_vals), len(sf_vals))
+                    if min_len > 0:
+                        matches = (ns_vals[:min_len] == sf_vals[:min_len]).sum()
+                    else:
+                        matches = 0
                     mismatches = total - matches
                 else:
                     matches = 0
@@ -422,7 +490,14 @@ if netsuite_file and salesforce_file:
             duplicate_count = filtered_ns[selected_field].duplicated().sum()
             
             if selected_field in filtered_sf.columns:
-                match_count = (filtered_ns[selected_field] == filtered_sf[selected_field]).sum()
+                # Reset indices to ensure alignment for comparison
+                ns_vals = filtered_ns[selected_field].reset_index(drop=True).astype(str)
+                sf_vals = filtered_sf[selected_field].reset_index(drop=True).astype(str)
+                min_len = min(len(ns_vals), len(sf_vals))
+                if min_len > 0:
+                    match_count = (ns_vals[:min_len] == sf_vals[:min_len]).sum()
+                else:
+                    match_count = 0
                 mismatch_count = total_records - match_count
                 match_rate = (match_count / total_records * 100) if total_records > 0 else 0
                 mismatch_rate = (mismatch_count / total_records * 100) if total_records > 0 else 0
@@ -513,7 +588,14 @@ if netsuite_file and salesforce_file:
             if field in filtered_ns.columns:
                 total = len(filtered_ns[field])
                 if field in filtered_sf.columns:
-                    matches = (filtered_ns[field] == filtered_sf[field]).sum()
+                    # Reset indices to ensure alignment for comparison
+                    ns_vals = filtered_ns[field].reset_index(drop=True).astype(str)
+                    sf_vals = filtered_sf[field].reset_index(drop=True).astype(str)
+                    min_len = min(len(ns_vals), len(sf_vals))
+                    if min_len > 0:
+                        matches = (ns_vals[:min_len] == sf_vals[:min_len]).sum()
+                    else:
+                        matches = 0
                     mismatches = total - matches
                     match_pct = (matches / total * 100) if total > 0 else 0
                     mismatch_pct = (mismatches / total * 100) if total > 0 else 0
@@ -548,7 +630,10 @@ if netsuite_file and salesforce_file:
         field_match_data = []
         for col in selected_primary + selected_secondary[:5]:  # Top fields
             if col in filtered_ns.columns and col in filtered_sf.columns:
-                match_count = (filtered_ns[col] == filtered_sf[col]).sum()
+                ns_vals = filtered_ns[col].reset_index(drop=True).astype(str)
+                sf_vals = filtered_sf[col].reset_index(drop=True).astype(str)
+                min_len = min(len(ns_vals), len(sf_vals))
+                match_count = (ns_vals[:min_len] == sf_vals[:min_len]).sum() if min_len > 0 else 0
                 total_count = len(filtered_ns[col])
                 match_rate = (match_count / total_count * 100) if total_count > 0 else 0
                 field_match_data.append({"Field": col, "Match Rate (%)": match_rate})
@@ -573,7 +658,13 @@ if netsuite_file and salesforce_file:
             if col in filtered_ns.columns:
                 nulls = filtered_ns[col].isnull().sum()
                 duplicates = filtered_ns[col].duplicated().sum()
-                matches = (filtered_ns[col] == filtered_sf[col]).sum() if col in filtered_sf.columns else 0
+                if col in filtered_sf.columns:
+                    ns_vals = filtered_ns[col].reset_index(drop=True).astype(str)
+                    sf_vals = filtered_sf[col].reset_index(drop=True).astype(str)
+                    min_len = min(len(ns_vals), len(sf_vals))
+                    matches = (ns_vals[:min_len] == sf_vals[:min_len]).sum() if min_len > 0 else 0
+                else:
+                    matches = 0
                 total = len(filtered_ns[col])
                 heatmap_data.append({
                     "Field": col,
@@ -596,45 +687,62 @@ if netsuite_file and salesforce_file:
             st.plotly_chart(fig_heatmap, use_container_width=True, key="plotly_chart_heatmap_tab3")
         else:
             st.info("No field data available for heatmap.")
+        
+        # Show available date columns for debugging
+        if not date_cols:
+            with st.expander("ℹ️ Time-based charts info"):
+                st.info("No date columns detected. Date columns must have 'date' in their name.")
+                st.write("**Available columns:**", list(filtered_ns.columns))
 
-        if date_cols:
+        if date_cols and date_col:
             # 1. Monthly match vs mismatch (stacked bar)
             merged_month = merged_df.copy()
             if date_col in merged_month.columns:
-                merged_month["Month"] = merged_month[date_col].dt.to_period("M").astype(str)
-                match_mask = merged_month["_merge"] == "both"
-                mismatch_mask = (merged_month["_merge"] == "left_only") | (merged_month["_merge"] == "right_only")
-                match_month = merged_month[match_mask].groupby("Month").size().reset_index(name="Match")
-                mismatch_month = merged_month[mismatch_mask].groupby("Month").size().reset_index(name="Mismatch")
-                match_mismatch = pd.merge(match_month, mismatch_month, on="Month", how="outer").fillna(0)
-                match_mismatch = match_mismatch.sort_values("Month")
-                fig_mm = go.Figure()
-                fig_mm.add_trace(go.Bar(x=match_mismatch["Month"], y=match_mismatch["Match"], name="Match", marker_color="#4CAF50"))
-                fig_mm.add_trace(go.Bar(x=match_mismatch["Month"], y=match_mismatch["Mismatch"], name="Mismatch", marker_color="#FF7043"))
-                fig_mm.update_layout(barmode='stack', title="Monthly Match vs Mismatch Trend",
-                                    paper_bgcolor='white' if theme == 'Light' else '#121212',
-                                    plot_bgcolor='white' if theme == 'Light' else '#121212',
-                                    font_color='white' if theme == 'Dark' else 'black')
-                st.plotly_chart(fig_mm, use_container_width=True, key="plotly_chart_trend_matchmismatch_tab3")
+                # Ensure date column is datetime type
+                merged_month[date_col] = pd.to_datetime(merged_month[date_col], errors="coerce")
+                # Remove rows with invalid dates
+                merged_month = merged_month[merged_month[date_col].notna()]
+                if len(merged_month) > 0:
+                    merged_month["Month"] = merged_month[date_col].dt.to_period("M").astype(str)
+                    match_mask = merged_month["_merge"] == "both"
+                    mismatch_mask = (merged_month["_merge"] == "left_only") | (merged_month["_merge"] == "right_only")
+                    match_month = merged_month[match_mask].groupby("Month").size().reset_index(name="Match")
+                    mismatch_month = merged_month[mismatch_mask].groupby("Month").size().reset_index(name="Mismatch")
+                    match_mismatch = pd.merge(match_month, mismatch_month, on="Month", how="outer").fillna(0)
+                    match_mismatch = match_mismatch.sort_values("Month")
+                    fig_mm = go.Figure()
+                    fig_mm.add_trace(go.Bar(x=match_mismatch["Month"], y=match_mismatch["Match"], name="Match", marker_color="#4CAF50"))
+                    fig_mm.add_trace(go.Bar(x=match_mismatch["Month"], y=match_mismatch["Mismatch"], name="Mismatch", marker_color="#FF7043"))
+                    fig_mm.update_layout(barmode='stack', title="Monthly Match vs Mismatch Trend",
+                                        paper_bgcolor='white' if theme == 'Light' else '#121212',
+                                        plot_bgcolor='white' if theme == 'Light' else '#121212',
+                                        font_color='white' if theme == 'Dark' else 'black')
+                    st.plotly_chart(fig_mm, use_container_width=True, key="plotly_chart_trend_matchmismatch_tab3")
 
             # 4. Cumulative match rate trend
-            if date_col in merged_month.columns:
+            if date_col in merged_df.columns:
                 st.subheader("Cumulative Match Rate Over Time")
-                merged_month = merged_month.sort_values(date_col)
-                merged_month["is_match"] = merged_month["_merge"] == "both"
-                merged_month["cum_match"] = merged_month["is_match"].cumsum()
-                merged_month["cum_total"] = range(1, len(merged_month) + 1)
-                merged_month["cum_rate"] = merged_month["cum_match"] / merged_month["cum_total"]
-                merged_month["Month"] = merged_month[date_col].dt.to_period("M").astype(str)
-                cum_month = merged_month.groupby("Month").agg({"cum_rate": "max"}).reset_index()
-                fig_cum = px.line(cum_month, x="Month", y="cum_rate", 
-                                 title="Cumulative Match Rate Trend",
-                                 labels={"cum_rate": "Cumulative Match Rate"},
-                                 markers=True)
-                fig_cum.update_layout(paper_bgcolor='white' if theme == 'Light' else '#121212',
-                                     plot_bgcolor='white' if theme == 'Light' else '#121212',
-                                     font_color='white' if theme == 'Dark' else 'black')
-                st.plotly_chart(fig_cum, use_container_width=True, key="plotly_chart_trend_cumrate_tab3")
+                merged_cumulative = merged_df.copy()
+                # Ensure date column is datetime type
+                merged_cumulative[date_col] = pd.to_datetime(merged_cumulative[date_col], errors="coerce")
+                # Remove rows with invalid dates
+                merged_cumulative = merged_cumulative[merged_cumulative[date_col].notna()]
+                if len(merged_cumulative) > 0:
+                    merged_cumulative = merged_cumulative.sort_values(date_col)
+                    merged_cumulative["is_match"] = merged_cumulative["_merge"] == "both"
+                    merged_cumulative["cum_match"] = merged_cumulative["is_match"].cumsum()
+                    merged_cumulative["cum_total"] = range(1, len(merged_cumulative) + 1)
+                    merged_cumulative["cum_rate"] = merged_cumulative["cum_match"] / merged_cumulative["cum_total"]
+                    merged_cumulative["Month"] = merged_cumulative[date_col].dt.to_period("M").astype(str)
+                    cum_month = merged_cumulative.groupby("Month").agg({"cum_rate": "max"}).reset_index()
+                    fig_cum = px.line(cum_month, x="Month", y="cum_rate", 
+                                     title="Cumulative Match Rate Trend",
+                                     labels={"cum_rate": "Cumulative Match Rate"},
+                                     markers=True)
+                    fig_cum.update_layout(paper_bgcolor='white' if theme == 'Light' else '#121212',
+                                         plot_bgcolor='white' if theme == 'Light' else '#121212',
+                                         font_color='white' if theme == 'Dark' else 'black')
+                    st.plotly_chart(fig_cum, use_container_width=True, key="plotly_chart_trend_cumrate_tab3")
         else:
             st.info("No date columns available for time-based trend analysis.")
 
@@ -799,5 +907,7 @@ if netsuite_file and salesforce_file:
             else:
                 st.success("No orphan records found in Salesforce!")
 
+elif netsuite_file and salesforce_file and not compare_button:
+    st.info("👆 Click the '🔍 Compare Data' button in the sidebar to start the analysis.")
 else:
-    st.warning("Please upload both files from the sidebar to proceed.")
+    st.warning("📁 Please upload both NetSuite and Salesforce files from the sidebar to begin.")

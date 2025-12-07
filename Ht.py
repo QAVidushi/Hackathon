@@ -805,17 +805,6 @@ if netsuite_file and salesforce_file and (compare_button or st.session_state.get
     # Use the user-selected match key for merging
     merge_key = match_key if match_key else (primary_cols[0] if primary_cols else None)
     
-    # Debug: Check if specific records exist after filtering
-    with st.expander("🐛 Debug: Records after filtering", expanded=True):
-        st.write(f"**Total NS records after filtering:** {len(filtered_ns)}")
-        st.write(f"**Total SF records after filtering:** {len(filtered_sf)}")
-        if merge_key and merge_key in filtered_ns.columns:
-            check_vals = ["SO433841", "SO433846"]
-            for val in check_vals:
-                in_ns = filtered_ns[filtered_ns[merge_key] == val]
-                in_sf = filtered_sf[filtered_sf[merge_key] == val] if merge_key in filtered_sf.columns else pd.DataFrame()
-                st.write(f"**{val}**: NS={len(in_ns)} rows, SF={len(in_sf)} rows")
-    
     # Always include merge key, date, and account columns in filtered data
     selected_fields = list(set(selected_primary + selected_secondary + selected_tertiary))
     extra_cols = []
@@ -876,19 +865,6 @@ if netsuite_file and salesforce_file and (compare_button or st.session_state.get
             
             if ns_only > 0 or sf_only > 0:
                 st.warning(f"⚠️ {ns_only + sf_only} records don't have a matching {merge_key} in the other system")
-            
-            # Debug: Check specific records
-            with st.expander("🐛 Debug: Check specific records", expanded=False):
-                check_keys = st.text_input("Enter Document Numbers to check (comma-separated):", "SO433841,SO433846")
-                if check_keys:
-                    keys_list = [k.strip() for k in check_keys.split(',')]
-                    for key in keys_list:
-                        matches = merged_df[merged_df[merge_key] == key]
-                        if len(matches) > 0:
-                            st.write(f"**{key}**: Found {len(matches)} row(s), _merge = {matches['_merge'].tolist()}")
-                            st.dataframe(matches[[merge_key, '_merge']], use_container_width=True)
-                        else:
-                            st.write(f"**{key}**: Not found in merged data")
             
         except ValueError as e:
             st.error(f"❌ Merge error: {str(e)}")
@@ -1407,13 +1383,8 @@ if netsuite_file and salesforce_file and (compare_button or st.session_state.get
             ns_only_records = merged_df[merged_df["_merge"] == "left_only"].copy()
             sf_only_records = merged_df[merged_df["_merge"] == "right_only"].copy()
             
-            # Debug info
+            # Show summary
             st.caption(f"📊 Found: {len(matched_records)} matched, {len(ns_only_records)} NS-only, {len(sf_only_records)} SF-only")
-            
-            # Show the match keys of NS-only records
-            if len(ns_only_records) > 0:
-                ns_keys = ns_only_records[match_key].tolist()
-                st.caption(f"🔍 NS-only Match Keys: {ns_keys}")
             
             comparison_rows = []
             
@@ -1429,7 +1400,6 @@ if netsuite_file and salesforce_file and (compare_button or st.session_state.get
                 })
             
             # Add NS-only records
-            st.caption(f"🔧 Processing {len(ns_only_records)} NS-only records...")
             for idx, row in ns_only_records.iterrows():
                 # Try to get the drill field value, but use match key if not available
                 if drill_field_ns in ns_only_records.columns and pd.notna(row[drill_field_ns]):
@@ -1442,8 +1412,6 @@ if netsuite_file and salesforce_file and (compare_button or st.session_state.get
                 
                 # Get match key value
                 key_val = str(row[match_key]) if match_key in row.index else 'N/A'
-                
-                st.caption(f"   Adding NS-only: {key_val}")
                 
                 comparison_rows.append({
                     'Match Key': key_val,

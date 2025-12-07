@@ -1621,7 +1621,21 @@ if netsuite_file and salesforce_file and (compare_button or st.session_state.get
         
         # Category selection for filtering fields
         st.subheader("Select Category")
-        category_choice = st.radio("Select Category for Drill Down", ["Primary", "Secondary", "Tertiary"], key="drill_radio_tab2b_unique")
+        
+        # Initialize session state for category if not exists
+        if "drill_category" not in st.session_state:
+            st.session_state.drill_category = "Primary"
+        
+        category_choice = st.radio(
+            "Select Category for Drill Down", 
+            ["Primary", "Secondary", "Tertiary"], 
+            index=["Primary", "Secondary", "Tertiary"].index(st.session_state.drill_category),
+            key="drill_radio_tab2b_unique"
+        )
+        
+        # Update session state
+        st.session_state.drill_category = category_choice
+        
         drill_fields = selected_primary if category_choice == "Primary" else selected_secondary if category_choice == "Secondary" else selected_tertiary
         
         # Display donut charts for all fields in the selected category
